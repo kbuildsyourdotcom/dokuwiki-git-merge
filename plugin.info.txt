@@ -1,0 +1,7 @@
+base   door43gitmerge
+author
+email
+date   2015-03-24
+name   door43gitmerge plugin
+desc   Tool to merge newly submitted frame updates.
+url    https://github.com/Door43/dokuwiki-git-merge
