@@ -6,4 +6,4 @@
  */
 
 //$conf['fixme']    = 'FIXME';
-$conf['mergens']    = 'door43gitmerge';
+$conf['repo_path'] = '';

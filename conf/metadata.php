@@ -6,4 +6,4 @@
  */
 
 //$meta['fixme'] = array('string');
-$meta['mergens'] = array('string');
+$meta['repo_path'] = array('string');

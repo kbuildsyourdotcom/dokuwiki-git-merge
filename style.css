@@ -108,3 +108,45 @@
   padding: .5em .5em 1.5em;
   text-align: right;
 }
+.door43gitmerge-edit {
+  display: none;
+}
+.frame {
+  position: relative;
+  margin: 10px 0;
+  padding-top: 1em;
+}
+.frame+.frame:after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-top: solid 1px #eee;
+}
+.frame.disabled::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  right: -5px;
+  bottom: -5px;
+  background: rgba(0,0,0,.25);
+}
+.frame-content-container {
+  position: relative;
+}
+.frame-content-container::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: 0;
+  bottom: -10px;
+  right: 0;
+  border-bottom: solid 1px #ccc;
+}
+.frame-version-selection {
+  padding: 1.5em 0 1em;
+  text-align: center;
+  font-weight: bold;
+}

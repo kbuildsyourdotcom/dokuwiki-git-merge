@@ -9,6 +9,16 @@ if(!defined('DOKU_INC')) die();
 if(!defined('DOKU_PLUGIN')) define('DOKU_PLUGIN', DOKU_INC.'lib/plugins/');
 require_once(DOKU_PLUGIN.'action.php');
 
+
+if (!function_exists('file_get_json')) { function file_get_json($file) { return json_decode( @file_get_contents($file), true ); } }
+if (!function_exists('file_put_json')) {
+  function file_put_json($file, $array) {
+    $json = json_encode($array, JSON_PRETTY_PRINT);
+    if ($json=='null') $json = '[]';
+    file_put_contents($file, $json);
+  }
+}
+
 class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
 
   function register(Doku_Event_Handler $controller) {
@@ -20,32 +30,43 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
   }
 
   function _ajax_call(&$event, $param) {
-    global $INPUT;
+    global $INPUT, $ID;
 
     if($event->data!=='door43gitmerge') {
       return;
     }
     $event->stopPropagation();
     $event->preventDefault();
+    $ID = $INPUT->post->str('page');
+    $action = 'none';
 
-    switch($INPUT->get->str('do')) {
+    switch($INPUT->post->str('action')) {
       case 'dismiss':
-        $this->_dismiss($INPUT->get->str('device'), $INPUT->get->str('frame'));
+        $this->_dismiss($INPUT->post->str('device'), $INPUT->post->str('frame'));
+        $action = 'dismiss';
         break;
       case 'apply':
-        $this->_apply($INPUT->get->str('device'), $INPUT->get->str('frame'));
+        $content = $this->_apply($INPUT->post->str('device'), $INPUT->post->str('frame'));
+        $action = 'apply';
         break;
       case 'edit':
-        $this->_apply_edit($INPUT->get->str('content'), $INPUT->get->str('frame'));
+        $content = $this->_edit($INPUT->post->str('device'), $INPUT->post->str('frame'), $INPUT->post->str('content'));
+        $action = 'edit';
         break;
       default:
         break;
     }
+    $return = array(
+      'action'=>$action,
+      'status'=>1
+    );
+    if (!empty($content)) $return['content'] = $content;//p_render('xhtml',p_get_instructions($content),$info);
+    echo json_encode($return);
 
   }
 
   function handle_tpl_act(&$event, $param) {
-    global $INPUT;
+    global $INPUT, $ID;
 
     $do = $event->data;
     if(is_array($do)) list($do) = array_keys($do);
@@ -57,190 +78,320 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         break;
       case 'door43gitmerge-dismiss':
         $this->_dismiss($INPUT->get->str('device'), $INPUT->get->str('frame'));
-        $event->data = 'show';
+        header( 'Location: /'.str_replace( ':', '/', $ID ) );
+        exit;
         break;
       case 'door43gitmerge-apply':
         $this->_apply($INPUT->get->str('device'), $INPUT->get->str('frame'));
-        $event->data = 'show';
+        header( 'Location: /'.str_replace( ':', '/', $ID ) );
+        exit;
         break;
       case 'door43gitmerge-edit':
-        $this->_edit($INPUT->get->str('content'), $INPUT->get->str('frame'));
-        $event->data = 'show';
+        $this->_edit($INPUT->get->str('device'), $INPUT->get->str('frame'), $INPUT->get->str('content'));
+        header( 'Location: /'.str_replace( ':', '/', $ID ) );
+        exit;
+        break;
+      case 'door43gitmerge-crawl':
+        $this->_crawl();
+        header( 'Location: /'.str_replace( ':', '/', $ID ).'?do=door43gitmerge' );
+        exit;
+        break;
+      case 'door43gitmerge-reset':
+        $this->_reset();
+        header( 'Location: /'.str_replace( ':', '/', $ID ).'?do=door43gitmerge' );
+        exit;
         break;
       default:
         break;
     }
   }
 
-  function _init() {
-    global $ID;
+  private function _debug($var) {
+    echo '<pre>';
+    print_r($var);
+    echo '</pre>';
+  }
+  private function _init() {
+    global $ID, $conf;
 
     if ($this->ready) return;
     $this->ready = 1;
     list($this->lang, $this->proj, $this->id) = explode(':', $ID);
     $this->repo_path = $this->getConf('repo_path').'/';
-    $this->page_path = 'uw-'.$this->proj.'-'.$this->lang.'/'.$this->id.'/';
-    $this->devices_list_filename = $this->proj.'-'.$this->lang.'-'.$this->id.'.updated';
+    $this->project_dir = 'uw-'.$this->proj.'-'.$this->lang.'/';
+    $this->page_path = $this->project_dir.$this->id.'/';
+    $this->cache_path = $conf['cachedir'].'/door43gitmerge/';
+    if (!is_dir($this->cache_path)) mkdir($this->cache_path, 0775, 1);
+    $this->merge_updated_file = $this->proj.'-'.$this->lang.'-'.$this->id.'.updated.json';
+    $this->merge_log_file = $this->proj.'-'.$this->lang.'-'.$this->id.'.log.json';
+
+    // check about continuing
+    $projects = array('obs');
+    $this->on = in_array($this->proj, $projects) && $this->id!='' && $this->id==preg_replace('/[^0-9]*/', '', $this->id);
+    unset($projects);
+
+    if (!$this->on) return;
+
+    // get count for badge
+    $merge_updated_data = file_get_json($this->cache_path.$this->merge_updated_file);
+    $this->updated_frames = $merge_updated_data['frames'];
+    $this->updated_frame_count = count($this->updated_frames);
+    unset($merge_updated_data);
   }
-  function _load_content() {
+  private function _load_existing_frames() {
     global $ID;
 
     //load source
     $source = preg_replace(
-      '/(?:[\r\n]*)({\{[^\}]*\}\})(?:[\r\n]*)/',
+      '/(?:[\r\n]*)(\{\{[^\}]*\}\})(?:[\r\n]*)/',
       '<!-- Frame -->$1<!-- Image -->',
       rawWiki($ID)
     );
     $source = trim($source.'');
     $source = preg_replace(
-      '/(?:[\r\n]+)/',
-      '<!-- Footer -->',
+      '/(?:[\r\n]+)(\/\/[^\/]*\/\/)/',
+      '<!-- Reference -->$1',
       $source
     );
-    list($source, $footer) = explode('<!-- Footer -->', $source);
+    list($source, $reference) = explode('<!-- Reference -->', $source);
     $frames = explode('<!-- Frame -->', $source);
+    unset($source);
 
     //set data
-    $this->header = array_shift($frames);
-    $this->footer = $footer;
-    unset($footer);
+    $this->title = preg_replace('/^(?:\s*======\s*)?(.*?)(?:\s*======\s*)?$/', '$1', array_shift($frames));
+    $this->reference = preg_replace('/^(?:\s*\/\/\s*)?(.*?)(?:\s*\/\/\s*)?$/', '$1', $reference);
+    unset($reference);
     $frame_keys = array();
     for ($i=1; $i<=count($frames); $i++) array_push($frame_keys, str_pad($i, 2, '0', STR_PAD_LEFT));
     unset($i);
-    $this->content = array_combine($frame_keys, $frames);
+    $this->frames = array_combine($frame_keys, $frames);
     unset($frames, $frame_keys);
+
   }
-  function _dismiss($device, $frame) {
+  private function _update_log($device, $frame, $action) {
+
+    //load updated json
+    $array = file_get_json($this->cache_path.$this->merge_updated_file);
+
+    //remove frame from device
+    unset($array['devices'][$device][$frame]);
+
+    //remove device if empty
+    if (!count($array['devices'][$device])) unset($array['devices'][$device]);
+
+    //remove device from frame
+    if ($array['frames'][$frame]) {
+      foreach ($array['frames'][$frame] as $key=>$this_device) if ($device==$this_device) unset($array['frames'][$frame][$key]);
+    }
+
+    //remove frame if empty
+    if (!count($array['frames'][$frame])) unset($array['frames'][$frame]);
+
+    //save updated json
+    file_put_json($this->cache_path.$this->merge_updated_file, $array);
+
+    //load log json
+    $array = file_get_json($this->cache_path.$this->merge_log_file);
+
+    //update log
+    $array[$device][$frame] = array(
+      'time'=>date('Y-m-d H:i:s'),
+      'action'=>$action
+    );
+
+    //save log json
+    file_put_json($this->cache_path.$this->merge_log_file, $array);
+
+  }
+  private function _dismiss($device, $frame) {
     $this->_init();
 
-    //remove frame from .updated
-    $frame_list_file = $this->repo_path.$device.'/'.$this->page_path.'.updated';
-    $frame_list = @file_get_contents($frame_list_file);
-    $frames = explode("\n", preg_replace('/[\r\n]+/', "\n", $frame_list) );
-    foreach($frames as $index=>$content) if ($content==$frame) unset($frames[$index]);
-    unset($index, $content);
-    sort($frames);
-    $frame_list = implode("\n", $frames);
-    file_put_contents($frame_list_file, $frame_list);
-    unset($frame_list_file, $frame_list, $frames);
-
-    //add frame to .dismissed
-    $frame_list_file = $this->repo_path.$device.'/'.$this->page_path.'.dismissed';
-    $frame_list = @file_get_contents($frame_list_file);
-    $frames = explode("\n", preg_replace('/[\r\n]+/', "\n", $frame_list) );
-    foreach($frames as $index=>$content) if ($content==$frame) unset($frames[$index]);
-    unset($index, $content);
-    array_push($frames, $frame);
-    sort($frames);
-    $frame_list = implode("\n", $frames);
-    file_put_contents($frame_list_file, $frame_list);
-    unset($frame_list_file, $frame_list, $frames);
+    //update json
+    $this->_update_log($device, $frame, 'dismissed');
   }
-  function _apply($device, $frame) {
+  private function _apply($device, $frame) {
+    global $ID;
     $this->_init();
-    $this->_load_content();
+    $this->_load_existing_frames();
 
     //replace frame with new content
-    $content = @file_get_contents($this->repo_path.$device.'/'.$this->page_path.$frame.'.txt');
-    list($image) = explode('<!-- Image -->', $this->content[$frame]);
-    $this->content[$frame] = $image.'<!-- Image -->'.$content;
-    $source = str_replace('<!-- Image -->', "\n\n", $this->header."\n\n".implode("\n\n", $this->content)."\n\n".$this->footer);
+    $new_content = $this->_content($device, $frame);
+    $frames = $this->frames;
+    $title = ($frame=='title') ? $new_content : $this->title;
+    $reference = ($frame=='reference') ? $new_content : $this->reference;
+    if ($frame!='title' && $frame!='reference') {
+      list($image) = explode('<!-- Image -->', $frames[$frame]);
+      $frames[$frame] = $image.'<!-- Image -->'.$new_content;
+    }
+    $new_wikitext = str_replace('<!-- Image -->', "\n\n", '====== '.$title.' ======'."\n\n\n\n".implode("\n\n\n\n", $frames)."\n\n\n\n".'// '.$reference.' //');
 
     //save source
-    //#TODO: add save trigger
+    saveWikiText($ID, $new_wikitext, 'Updated frame '.$frame.' to new version from device '.$device.'.');
+
+    //update json
+    $this->_update_log($device, $frame, 'applied');
+
+    //return content
+    if ($frame=='title') $new_content = '== '.$new_content.' ==';
+    if ($frame=='reference') $new_content = '// '.$new_content.' //';
+    return p_render('xhtml', p_get_instructions($new_content), $info);
   }
-  function _edit($content, $frame) {
+  private function _edit($device, $frame, $new_content) {
     $this->_init();
-    $this->_load_content();
+    $this->_load_existing_frames();
 
     //replace frame with new content
-    list($image) = explode('<!-- Image -->', $this->content[$frame]);
-    $this->content[$frame] = $image.'<!-- Image -->'.$content;
-    $source = str_replace('<!-- Image -->', "\n\n", $this->header."\n\n".implode("\n\n", $this->content)."\n\n".$this->footer);
+    $frames = $this->frames;
+    $title = ($frame=='title') ? $new_content : $this->title;
+    $reference = ($frame=='reference') ? $new_content : $this->reference;
+    if ($frame!='title' && $frame!='reference') {
+      list($image) = explode('<!-- Image -->', $frames[$frame]);
+      $frames[$frame] = $image.'<!-- Image -->'.$new_content;
+    }
+    $new_wikitext = str_replace('<!-- Image -->', "\n\n", '====== '.$title.' ======'."\n\n\n\n".implode("\n\n\n\n", $frames)."\n\n\n\n".'// '.$reference.' //');
 
     //save source
-    //#TODO: add save trigger
-  }
+    saveWikiText($ID, $new_wikitext, 'Updated frame '.$frame.' to revision of version from device '.$device.'.');
 
+    //update json
+    $this->_update_log($device, $frame, 'applied');
+
+    //return content
+    if ($frame=='title') $new_content = '== '.$new_content.' ==';
+    if ($frame=='reference') $new_content = '// '.$new_content.' //';
+    return p_render('xhtml', p_get_instructions($new_content), $info);
+  }
+  private function _user($device) {
+    return file_get_json($this->repo_path.$device.'/profile/contact.json');
+  }
+  private function _content($device, $frame) {
+    return trim(file_get_contents($this->repo_path.$device.'/'.$this->page_path.$frame.'.txt').'');
+  }
+  private function _crawl() {
+    $this->_init();
+
+    //preload existing json
+    $files = array();
+    if (is_dir($this->cache_path)) {
+      $jsons = scandir($this->cache_path);
+      foreach ($jsons as $json_filename) {
+        if (substr($json_filename, -5)!='.json') continue;
+        list($file, $type) = explode('.', substr($json_filename, 0, -5));
+        if ($type!='updated' && $type!='log') continue;
+        list($project, $lang, $id) = explode('-', $file);
+        $files[$project][$lang][$id][$type] = file_get_json($this->cache_path.$json_filename);
+        unset($file, $type, $project, $lang, $id);
+      }
+    }
+    unset($jsons, $json_filename);
+
+    //crawl repos and build update
+    $devices_path = $this->repo_path;
+    $devices = @scandir($devices_path);
+    if (!empty($devices)) foreach ($devices as $device_index=>$device) {
+      if (substr($device, 0, 1)=='.' || !is_dir($devices_path.$device.'/')) {
+        unset($devices[$device_index]);
+        continue;
+      }
+      $projects_path = $devices_path.$device.'/';
+      $projects = scandir($projects_path);
+      if (!empty($projects)) foreach ($projects as $project_index=>$project_filename) {
+        if (substr($project_filename, 0, 3)!='uw-' || !is_dir($projects_path.$project_filename.'/')) {
+          unset($projects[$project_index]);
+          continue;
+        }
+        list($project, $lang) = explode('-', substr($project_filename, 3));
+        $ids_path = $projects_path.$project_filename.'/';
+        $ids = scandir($ids_path);
+        if (!empty($ids)) foreach ($ids as $id_index=>$id) {
+          if (substr($id, 0, 1)=='.' || !is_dir($ids_path.$id.'/')) {
+            unset($ids[$id_index]);
+            continue;
+          }
+          $data = &$files[$project][$lang][$id];
+          $frames_path = $ids_path.$id.'/';
+          $frames = scandir($frames_path);
+          if (!empty($frames)) foreach ($frames as $frame_index=>$frame_filename) {
+            if (substr($frame_filename, -4)!='.txt') {
+              unset($frames[$frame_index]);
+              continue;
+            }
+            $frame = substr($frame_filename, 0, -4);
+            $updated = date('Y-m-d H:i:s', filemtime($frames_path.$frame_filename));
+            if ($data['log'][$device][$frame]['time']<$updated) {
+              $data['updated']['devices'][$device][$frame] = $updated;
+              $data['updated']['frames'][$frame][] = $device;
+              $data['log'][$device][$frame] = array(
+                'time'=>$updated,
+                'action'=>'updated'
+              );
+            }
+            else {
+              $data['nope'][$device][$frame] = array(
+                'updated'=>$updated,
+                'time'=>$files[$project][$id]['log'][$device][$frame]['time'],
+                'action'=>$files[$project][$id]['log'][$device][$frame]['action']
+              );
+            }
+          }
+          unset($frame_index, $frame_filename, $frame, $updated);
+        }
+        unset($id_index, $id);
+      }
+      unset($project_index, $project);
+    }
+    unset($device_index, $device);
+
+    //update json
+    foreach($files as $project=>$langs) {
+      foreach($langs as $lang=>$ids) {
+        foreach($ids as $id=>$content) {
+          file_put_json($this->cache_path.$project.'-'.$lang.'-'.$id.'.updated.json', $content['updated']);
+          file_put_json($this->cache_path.$project.'-'.$lang.'-'.$id.'.log.json', $content['log']);
+        }
+      }
+    }
+    unset($files, $project, $langs, $lang, $ids, $id, $content);
+
+  }
+  private function _reset() {
+    $this->_init();
+
+    //delete existing json
+    if (is_dir($this->cache_path)) {
+      $jsons = scandir($this->cache_path);
+      foreach ($jsons as $json_filename) {
+        if (substr($json_filename, -5)!='.json') continue;
+        list($file, $type) = explode('.', substr($json_filename, 0, -5));
+        if ($type!='updated' && $type!='log') continue;
+        unlink($this->cache_path.$json_filename);
+        unset($file, $type);
+      }
+    }
+    $this->_crawl();
+  }
   function compile_merge_data(&$event, $param) {
     global $ID, $INFO;
 
     $this->_init();
-    $projects = array('obs');
-    $devices_list = @file_get_contents($this->repo_path.$this->devices_list_filename);
-    $this->devices = array_flip( explode('\n', preg_replace('/[\r\n]+/', '\n', $devices_list) ) );
-    unset($devices_list);
-    if( array_keys( array_slice($this->devices, 0, 1) )[0]=='' ) array_shift($this->devices);
-    $this->device_count = count( $this->devices );
-    $this->on = in_array($this->proj, $projects) && $this->id!='' && $this->id==preg_replace('/[^0-9]*/', '', $this->id);
-
-    // compile available changes
-    $this->frames = array();
-    foreach ($this->devices as $device=>&$user) {
-      $user = json_decode( @file_get_contents($this->repo_path.$device.'/profile/contact.json'), true );
-      $frame_list = @file_get_contents($this->repo_path.$device.'/'.$this->page_path.'.updated');
-      $frames = explode("\n", preg_replace('/[\r\n]+/', "\n", $frame_list) );
-      unset($frame_list);
-      foreach ($frames as $frame) {
-        $this->frames[$frame][$device] = @file_get_contents($this->repo_path.$device.'/'.$this->page_path.$frame.'.txt');
-      }
-      unset($frames, $frame, $device);
-    }
-    @ksort($this->frames);
-    if( array_slice($this->frames, 0, 1)=='' ) array_shift($this->frames);
-    $this->frame_count = count($this->frames);
 
     if($event->data != 'show' || !$this->show_merge_interface) return; // nothing to do for us
 
-    //$event->preventDefault();
   }
 
   function render_merge_interface(&$event, $param) {
-    global $ID, $INFO, $INPUT;
 
     if($this->show_merge_interface) {
 
-      $this->_load_content();
-      echo p_render('xhtml', p_get_instructions($this->header), $info);
-
-/** /
-      //parse frames from raw page content and echo page header
-      $raw_data = preg_replace(
-        '/(?:[\r\n]*)({\{[^\}]*\}\})(?:[\r\n]*)/',
-        '<!-- Frame -->$1<!-- Image -->',
-        rawWiki($ID)
-      );
-      $frames = array_slice( explode('<!-- Frame -->', $raw_data), 0, -1 );
-      echo p_render('xhtml',p_get_instructions(array_shift($frames)),$info);
-      $frame_keys = array();
-      for ($i=1; $i<=count($frames); $i++) array_push($frame_keys, str_pad($i, 2, '0', STR_PAD_LEFT));
-      $frames = array_combine($frame_keys, $frames);
-      unset($frame_keys);
-/**/
+      $this->_load_existing_frames();
+      echo p_render('xhtml', p_get_instructions('====== '.$this->title.' ======'), $info);
 
       //loop through frames with available merge options
-      foreach($this->frames as $frame=>$data_array) {
-        //list($image, $current_content) = explode('<!-- Image -->', $frames[$frame]);
-        list($image, $current_content) = explode('<!-- Image -->', $this->content[$frame]);
-        echo p_render('xhtml',p_get_instructions($image),$info);
-        echo p_render('xhtml',p_get_instructions($current_content),$info);
-        echo $this->getLang('version_to_compare').': ';
-        echo '<select class="door43gitmerge-diff-switcher" data-frame="'.$frame.'">';
-        foreach ($data_array as $device=>$new_content) {
-          if (!isset($first_device)) $first_device = $device;
-          echo '<option value="'.$device.'">'.$this->devices[$device]['name'].'</option>';
-        }
-        echo '<option value="all">'.$this->getLang('show_all').'</option>';
-        unset($device, $new_content);
-        echo '</select>';
-        echo '<div id="frame-'.$frame.'" class="frame-diffs">';
-        foreach ($data_array as $device=>$new_content) {
-          $this->html_diff($frame, $device, $current_content, $new_content, $device==$first_device);
-        }
-        unset($device, $new_content, $first_device);
-        echo '</div>';
+      if (!empty($this->updated_frames['title'])) {
+        $this->render_merge_interface_frame('title', $this->updated_frames['title']);
+        unset($this->updated_frames['title']);
       }
-      echo p_render('xhtml', p_get_instructions($this->footer), $info);
+      foreach($this->updated_frames as $frame=>$data_array) $this->render_merge_interface_frame($frame, $data_array);
 ?>
 <script type="text/javascript">/*<![CDATA[*/
 jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
@@ -248,16 +399,109 @@ jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
     , lastDevice = elem.attr('data-last-value')
     , device = elem.val()
     , frame = elem.attr('data-frame')
-    , diffs = jQuery('#frame-'+frame+'>.table');
+    , diffs = jQuery('#frame-'+frame+' .table');
   if (lastDevice==device) return;
   lastDevice = device;
   if (device=='all') diffs.addClass('show');
   else diffs.removeClass('show').filter('[data-device="'+device+'"]').addClass('show');
 });
+jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', function(e){
+  e.preventDefault();
+  var elem = jQuery(this)
+    , page = elem.attr('data-page')
+    , frame = elem.attr('data-frame')
+    , device = elem.attr('data-device')
+    , action = elem.attr('data-action')
+    , frameElem = jQuery('#frame-'+frame)
+    , contentElem = frameElem.find('.frame-content')
+    , inputElems = frameElem.find('input[type="submit"], textarea, select')
+    , selectElem = frameElem.find('.door43gitmerge-diff-switcher');
+  frameElem.addClass('disabled');
+  inputElems.attr('disabled', 'disabled');
+  jQuery.post(
+    DOKU_BASE + 'lib/exe/ajax.php',
+    {
+      call: 'door43gitmerge',
+      action: action,
+      page: page,
+      frame: frame,
+      device: device
+    },
+    function(data) {
+      if (data.status) {
+        inputElems.removeAttr('disabled');
+        frameElem.removeClass('disabled').find('.table[data-device="'+device+'"]').remove();
+        if (data.action=='apply' || data.action=='edit') contentElem.html(data.content);
+        selectElem.children('option[value="'+device+'"]').remove();
+        selectElem.trigger('change');
+        if (!frameElem.find('.table').length) setTimeout(function(){
+          frameElem.remove();
+          if (!jQuery('.frame').length) {
+            jQuery('.page.group .level1').html('All available merges have been managed. <a href="?">Return to Page</a>');
+            window.scrollTo(0,0);
+          }
+        }, 100);
+      }
+    },
+    'json'
+  );
+});
 /*!]]>*/</script>
 <?php
       $event->preventDefault();
     }
+  }
+  private function render_merge_interface_frame($frame, $data_array) {
+    if ($frame=='title') $current_content = $this->title;
+    elseif ($frame=='reference') $current_content = $this->reference;
+    else list($image, $current_content) = explode('<!-- Image -->', $this->frames[$frame]);
+    $current_content = trim($current_content);
+
+    //remove device frames that match current frames
+    foreach ($data_array as $index=>$device) {
+      $new_content = $this->_content($device, $frame);
+      if (preg_replace('/[\r\n]*/', ' ', $current_content)==preg_replace('/[\r\n]*/', ' ', $new_content)){
+        $this->_dismiss($device, $frame);
+        unset($data_array[$index]);
+      }
+    }
+    unset($index, $device);
+    if (!count($data_array)) return;
+
+    echo '<div id="frame-'.$frame.'" class="frame">';
+    if ($frame=='title' || $frame=='reference') $frame_title = ucwords($frame);
+    else $frame_title = 'Frame '.$frame;
+    echo p_render('xhtml',p_get_instructions('==='.$frame_title.'==='),$info);
+    unset($frame_title);
+    echo '<div class="frame-content-container">';
+    if (!empty($image)) echo p_render('xhtml',p_get_instructions($image),$info);
+    unset($image);
+    echo '<div class="frame-content">';
+    if ($frame=='title') echo p_render('xhtml',p_get_instructions('== '.$current_content.' =='),$info);
+    elseif ($frame=='reference') echo p_render('xhtml',p_get_instructions('// '.$current_content.' //'),$info);
+    else echo p_render('xhtml',p_get_instructions($current_content),$info);
+    echo '</div>';
+    echo '</div>';
+    echo '<div class="frame-version-selection">';
+    echo $this->getLang('version_to_compare').': ';
+    echo '<select class="door43gitmerge-diff-switcher" data-frame="'.$frame.'">';
+    foreach ($data_array as $device) {
+      if (!isset($first_device)) $first_device = $device;
+      if (empty($this->devices[$device])) $this->devices[$device] = $this->_user($device);
+      echo '<option value="'.$device.'">'.$this->devices[$device]['name'].'</option>';
+    }
+    echo '<option value="all">'.$this->getLang('show_all').'</option>';
+    unset($device, $new_content);
+    echo '</select>';
+    echo '</div>';
+    echo '<div class="frame-diffs">';
+    foreach ($data_array as $device) {
+      $new_content = $this->_content($device, $frame);
+      $this->html_diff($frame, $device, $current_content, $new_content, $device==$first_device);
+    }
+    unset($device, $new_content, $first_device);
+    echo '</div>';
+    echo '</div>';
   }
 
   public function handle_add_merge_button(&$event, $param) {
@@ -265,12 +509,11 @@ jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
 
     if(!$this->on) return;
 
-    $mergens = cleanID($this->getConf('mergens'));
     if($this->show_merge_interface) {
       echo '<li><a href="'.wl($INFO['id']).'" class="action show" accesskey="v" rel="nofollow" title="'.$this->getLang('back').' [V]"><span>'.$this->getLang('back').'</span></a></li>';
     } else {
-      $badge = $this->frame_count>0 ? $this->frame_count : '';
-      echo '<li data-badge="'.$badge.'"><a class="action merge" title="'.$this->getLang('merge').'" href="'.wl($INFO['id']).'?do='.$mergens.'"><span>'.$this->getLang('merge').'</span></a></li>';
+      $badge = $this->updated_frame_count>0 ? $this->updated_frame_count : '';
+      echo '<li data-badge="'.$badge.'"><a class="action merge" title="'.$this->getLang('merge').'" href="'.wl($INFO['id']).'?do=door43gitmerge"><span>'.$this->getLang('merge').'</span></a></li>';
     }
   }
 
@@ -335,9 +578,9 @@ jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
             <input type="hidden" name="frame" value="<?php echo $frame; ?>">
             <input type="hidden" name="device" value="<?php echo $device; ?>">
             <div class="door43gitmerge-actions">
-                <input name="do[door43gitmerge-dismiss]" type="submit" class="door43gitmerge-dismiss" value="<?php echo $this->getLang('dismiss'); ?>">
-                <input name="do[door43gitmerge-edit]" type="submit" class="door43gitmerge-edit" value="<?php echo $this->getLang('edit_and_apply'); ?>">
-                <input name="do[door43gitmerge-apply]" type="submit" class="door43gitmerge-apply" value="<?php echo $this->getLang('apply'); ?>">
+                <input name="do[door43gitmerge-dismiss]" type="submit" class="door43gitmerge-dismiss" value="<?php echo $this->getLang('dismiss'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="dismiss">
+                <input name="do[door43gitmerge-edit]" type="submit" class="door43gitmerge-edit" value="<?php echo $this->getLang('edit_and_apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="edit">
+                <input name="do[door43gitmerge-apply]" type="submit" class="door43gitmerge-apply" value="<?php echo $this->getLang('apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="apply">
             </div>
         </form>
     </div>

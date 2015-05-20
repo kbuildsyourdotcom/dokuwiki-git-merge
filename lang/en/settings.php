@@ -1,4 +1,4 @@
-<?php
+t<?php
 /**
  * english language file for translationmerge plugin
  *
@@ -8,6 +8,6 @@
 // keys need to match the config setting name
 // $lang['fixme'] = 'FIXME';
 
-$lang['mergens'] = 'Namespace for door43gitmerge';
+$lang['repo_path'] = 'Git Repository Path (Exclude Trailing Slash)';
 
 //Setup VIM: ex: et ts=4 :
