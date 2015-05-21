@@ -53,6 +53,16 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         $content = $this->_edit($INPUT->post->str('device'), $INPUT->post->str('frame'), $INPUT->post->str('content'));
         $action = 'edit';
         break;
+      case 'mark-updated':
+        $content = $this->_mark_updated(
+          $INPUT->post->str('lang'),
+          $INPUT->post->str('project'),
+          $INPUT->post->str('id'),
+          $INPUT->post->str('device'),
+          $INPUT->post->str('files')
+        );
+        $action = 'mark-updated';
+        break;
       default:
         break;
     }
@@ -60,7 +70,7 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
       'action'=>$action,
       'status'=>1
     );
-    if (!empty($content)) $return['content'] = $content;//p_render('xhtml',p_get_instructions($content),$info);
+    if (!empty($content)) $return['content'] = $content;
     echo json_encode($return);
 
   }
@@ -93,12 +103,12 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         break;
       case 'door43gitmerge-crawl':
         $this->_crawl();
-        header( 'Location: /'.str_replace( ':', '/', $ID ).'?do=door43gitmerge' );
+        header( 'Location: /'.str_replace( ':', '/', $ID ) );
         exit;
         break;
       case 'door43gitmerge-reset':
         $this->_reset();
-        header( 'Location: /'.str_replace( ':', '/', $ID ).'?do=door43gitmerge' );
+        header( 'Location: /'.str_replace( ':', '/', $ID ) );
         exit;
         break;
       default:
@@ -116,18 +126,18 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
 
     if ($this->ready) return;
     $this->ready = 1;
-    list($this->lang, $this->proj, $this->id) = explode(':', $ID);
+    list($this->lang, $this->project, $this->id) = explode(':', $ID);
     $this->repo_path = $this->getConf('repo_path').'/';
-    $this->project_dir = 'uw-'.$this->proj.'-'.$this->lang.'/';
+    $this->project_dir = 'uw-'.$this->project.'-'.$this->lang.'/';
     $this->page_path = $this->project_dir.$this->id.'/';
     $this->cache_path = $conf['cachedir'].'/door43gitmerge/';
     if (!is_dir($this->cache_path)) mkdir($this->cache_path, 0775, 1);
-    $this->merge_updated_file = $this->proj.'-'.$this->lang.'-'.$this->id.'.updated.json';
-    $this->merge_log_file = $this->proj.'-'.$this->lang.'-'.$this->id.'.log.json';
+    $this->merge_updated_file = $this->_get_log_filename($this->project, $this->lang, $this->id, 'updated');
+    $this->merge_log_file = $this->_get_log_filename($this->project, $this->lang, $this->id, 'log');
 
     // check about continuing
     $projects = array('obs');
-    $this->on = in_array($this->proj, $projects) && $this->id!='' && $this->id==preg_replace('/[^0-9]*/', '', $this->id);
+    $this->on = in_array($this->project, $projects) && $this->id!='' && $this->id==preg_replace('/[^0-9]*/', '', $this->id);
     unset($projects);
 
     if (!$this->on) return;
@@ -168,39 +178,68 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
     unset($frames, $frame_keys);
 
   }
-  private function _update_log($device, $frame, $action) {
+  private function _update_log($device, $frame, $action, $time='default', $merge_updated_file='default', $merge_log_file='default') {
+
+    //set variables
+    if ($time=='default') $time = date('Y-m-d H:i:s');
+    if ($merge_updated_file=='default') $merge_updated_file= $this->merge_updated_file;
+    if ($merge_log_file=='default') $merge_log_file = $this->merge_log_file;
 
     //load updated json
-    $array = file_get_json($this->cache_path.$this->merge_updated_file);
+    $array = file_get_json($this->cache_path.$merge_updated_file);
 
-    //remove frame from device
-    unset($array['devices'][$device][$frame]);
+    //if update
+    if ($action=='updated') {
 
-    //remove device if empty
-    if (!count($array['devices'][$device])) unset($array['devices'][$device]);
+      //add frame to device
+      $array['devices'][$device][$frame] = $time;
 
-    //remove device from frame
-    if ($array['frames'][$frame]) {
-      foreach ($array['frames'][$frame] as $key=>$this_device) if ($device==$this_device) unset($array['frames'][$frame][$key]);
+      //add device to frame
+      $frame_exists = 0;
+      if ($array['frames'][$frame]) {
+        foreach ($array['frames'][$frame] as $key=>$this_device) if ($device==$this_device) $frame_exists = 1;
+      }
+      if ($frame_exists==0) $array['frames'][$frame][] = $device;
+
+    }
+    //if apply or dismiss
+    else {
+
+      //remove frame from device
+      unset($array['devices'][$device][$frame]);
+
+      //remove device if empty
+      if (!count($array['devices'][$device])) unset($array['devices'][$device]);
+
+      //remove device from frame
+      if ($array['frames'][$frame]) {
+        foreach ($array['frames'][$frame] as $key=>$this_device) if ($device==$this_device) unset($array['frames'][$frame][$key]);
+      }
+
+      //remove frame if empty
+      if (!count($array['frames'][$frame])) unset($array['frames'][$frame]);
+
     }
 
-    //remove frame if empty
-    if (!count($array['frames'][$frame])) unset($array['frames'][$frame]);
-
     //save updated json
-    file_put_json($this->cache_path.$this->merge_updated_file, $array);
+    file_put_json($this->cache_path.$merge_updated_file, $array);
 
     //load log json
-    $array = file_get_json($this->cache_path.$this->merge_log_file);
+    $array = file_get_json($this->cache_path.$merge_log_file);
 
     //update log
     $array[$device][$frame] = array(
-      'time'=>date('Y-m-d H:i:s'),
+      'time'=>$time,
       'action'=>$action
     );
 
     //save log json
-    file_put_json($this->cache_path.$this->merge_log_file, $array);
+    file_put_json($this->cache_path.$merge_log_file, $array);
+
+  }
+  private function _get_log_filename($project, $lang, $id, $type) {
+
+    return $project.'-'.$lang.'-'.$id.'.'.$type.'.json';
 
   }
   private function _dismiss($device, $frame) {
@@ -326,13 +365,6 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
                 'action'=>'updated'
               );
             }
-            else {
-              $data['nope'][$device][$frame] = array(
-                'updated'=>$updated,
-                'time'=>$files[$project][$id]['log'][$device][$frame]['time'],
-                'action'=>$files[$project][$id]['log'][$device][$frame]['action']
-              );
-            }
           }
           unset($frame_index, $frame_filename, $frame, $updated);
         }
@@ -346,8 +378,8 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
     foreach($files as $project=>$langs) {
       foreach($langs as $lang=>$ids) {
         foreach($ids as $id=>$content) {
-          file_put_json($this->cache_path.$project.'-'.$lang.'-'.$id.'.updated.json', $content['updated']);
-          file_put_json($this->cache_path.$project.'-'.$lang.'-'.$id.'.log.json', $content['log']);
+          file_put_json($this->cache_path.$this->_get_log_filename($project, $lang, $id, 'updated'), $content['updated']);
+          file_put_json($this->cache_path.$this->_get_log_filename($project, $lang, $id, 'log'), $content['log']);
         }
       }
     }
@@ -369,6 +401,31 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
       }
     }
     $this->_crawl();
+
+  }
+  private function _mark_updated($lang, $project, $id, $device, $files) {
+    $this->_init();
+
+    //parse file list
+    $files = explode(',', $files);
+    if (!empty($files)) foreach ($files as $file) {
+      list($id, $frame) = explode('-', $file);
+      $ids[$id][] = $frame;
+    }
+    unset($files, $file);
+
+    //update json
+    if (!empty($ids)) foreach ($ids as $id=>$frames) {
+      $merge_updated_file = $this->_get_log_filename($project, $lang, $id, 'updated');
+      $merge_log_file = $this->_get_log_filename($project, $lang, $id, 'log');
+      foreach ($frames as $frame) {
+        $time = date('Y-m-d H:i:s', filemtime($this->repo_path.$device.'/uw-'.$project.'-'.$lang.'/'.$id.'/'.$frame.'.txt'));
+        $this->_update_log($device, $frame, 'updated', $time, $merge_updated_file, $merge_log_file);
+      }
+      unset($merge_updated_file, $merge_log_file, $frame, $time);
+    }
+    unset($ids, $id);
+
   }
   function compile_merge_data(&$event, $param) {
     global $ID, $INFO;
@@ -391,7 +448,8 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         $this->render_merge_interface_frame('title', $this->updated_frames['title']);
         unset($this->updated_frames['title']);
       }
-      foreach($this->updated_frames as $frame=>$data_array) $this->render_merge_interface_frame($frame, $data_array);
+      if (!empty($this->updated_frames)) {
+        foreach($this->updated_frames as $frame=>$data_array) $this->render_merge_interface_frame($frame, $data_array);
 ?>
 <script type="text/javascript">/*<![CDATA[*/
 jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
@@ -448,6 +506,8 @@ jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', fun
 });
 /*!]]>*/</script>
 <?php
+      }
+      else echo 'All available merges have been managed. <a href="?">Return to Page</a>';
       $event->preventDefault();
     }
   }
