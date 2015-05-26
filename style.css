@@ -108,8 +108,18 @@
   padding: .5em .5em 1.5em;
   text-align: right;
 }
-.door43gitmerge-edit {
+.mode-edit .door43gitmerge-action-interface,
+.door43gitmerge-content,
+.door43gitmerge-edit-interface {
   display: none;
+}
+.mode-edit .door43gitmerge-content,
+.mode-edit .door43gitmerge-edit-interface {
+  display: inline-block;
+}
+.door43gitmerge-content {
+  width: 100%;
+  margin-top: .5em;
 }
 .frame {
   position: relative;

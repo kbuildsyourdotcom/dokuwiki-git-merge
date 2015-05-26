@@ -17,6 +17,8 @@ $lang['version_to_compare'] = 'Version To Compare';
 $lang['show_all'] = 'Show All';
 $lang['dismiss'] = 'Dismiss';
 $lang['edit_and_apply'] = 'Edit &amp; Apply';
+$lang['cancel'] = 'Cancel';
+$lang['reset'] = 'Reset';
 $lang['apply'] = 'Apply';
 
 //Setup VIM: ex: et ts=4 :

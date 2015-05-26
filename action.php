@@ -49,9 +49,9 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         $content = $this->_apply($INPUT->post->str('device'), $INPUT->post->str('frame'));
         $action = 'apply';
         break;
-      case 'edit':
-        $content = $this->_edit($INPUT->post->str('device'), $INPUT->post->str('frame'), $INPUT->post->str('content'));
-        $action = 'edit';
+      case 'apply-edited':
+        $content = $this->_apply_edited($INPUT->post->str('device'), $INPUT->post->str('frame'), $INPUT->post->str('content'));
+        $action = 'apply-edited';
         break;
       case 'mark-updated':
         $content = $this->_mark_updated(
@@ -96,8 +96,8 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         header( 'Location: /'.str_replace( ':', '/', $ID ) );
         exit;
         break;
-      case 'door43gitmerge-edit':
-        $this->_edit($INPUT->get->str('device'), $INPUT->get->str('frame'), $INPUT->get->str('content'));
+      case 'door43gitmerge-apply-edited':
+        $this->_apply_edited($INPUT->get->str('device'), $INPUT->get->str('frame'), $INPUT->get->str('content'));
         header( 'Location: /'.str_replace( ':', '/', $ID ) );
         exit;
         break;
@@ -275,7 +275,8 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
     if ($frame=='reference') $new_content = '// '.$new_content.' //';
     return p_render('xhtml', p_get_instructions($new_content), $info);
   }
-  private function _edit($device, $frame, $new_content) {
+  private function _apply_edited($device, $frame, $new_content) {
+    global $ID;
     $this->_init();
     $this->_load_existing_frames();
 
@@ -472,7 +473,8 @@ jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', fun
     , action = elem.attr('data-action')
     , frameElem = jQuery('#frame-'+frame)
     , contentElem = frameElem.find('.frame-content')
-    , inputElems = frameElem.find('input[type="submit"], textarea, select')
+    , inputElems = frameElem.find('input[type="submit"], input[type="button"], input[type="reset"], textarea, select')
+    , contentElem = frameElem.find('.door43gitmerge-content')
     , selectElem = frameElem.find('.door43gitmerge-diff-switcher');
   frameElem.addClass('disabled');
   inputElems.attr('disabled', 'disabled');
@@ -483,13 +485,14 @@ jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', fun
       action: action,
       page: page,
       frame: frame,
-      device: device
+      device: device,
+      content: contentElem.val()
     },
     function(data) {
       if (data.status) {
         inputElems.removeAttr('disabled');
         frameElem.removeClass('disabled').find('.table[data-device="'+device+'"]').remove();
-        if (data.action=='apply' || data.action=='edit') contentElem.html(data.content);
+        if (data.action=='apply' || data.action=='apply-edited') contentElem.html(data.content);
         selectElem.children('option[value="'+device+'"]').remove();
         selectElem.trigger('change');
         if (!frameElem.find('.table').length) setTimeout(function(){
@@ -503,6 +506,23 @@ jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', fun
     },
     'json'
   );
+});
+jQuery(document).on('click', '.door43gitmerge-edit', function(e){
+  e.preventDefault();
+  var elem = jQuery(this)
+    , frame = elem.attr('data-frame')
+    , device = elem.attr('data-device')
+    , formElem = jQuery('.table[data-frame="'+frame+'"][data-device="'+device+'"] form');
+  formElem.addClass('mode-edit');
+});
+jQuery(document).on('click', '.door43gitmerge-cancel', function(e){
+  e.preventDefault();
+  var elem = jQuery(this)
+    , frame = elem.attr('data-frame')
+    , device = elem.attr('data-device')
+    , formElem = jQuery('.table[data-frame="'+frame+'"][data-device="'+device+'"] form');
+  formElem[0].reset();
+  formElem.removeClass('mode-edit');
 });
 /*!]]>*/</script>
 <?php
@@ -634,13 +654,21 @@ jQuery(document).on('click', '.door43gitmerge-actions input[type="submit"]', fun
         echo html_insert_softbreaks($diffformatter->format($diff)); ?>
 
         </table>
-        <form>
+        <form class="mode-action">
             <input type="hidden" name="frame" value="<?php echo $frame; ?>">
             <input type="hidden" name="device" value="<?php echo $device; ?>">
+            <textarea name="content" class="door43gitmerge-content" rows="5" cols="50"><?php echo htmlspecialchars($r_text); ?></textarea>
             <div class="door43gitmerge-actions">
-                <input name="do[door43gitmerge-dismiss]" type="submit" class="door43gitmerge-dismiss" value="<?php echo $this->getLang('dismiss'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="dismiss">
-                <input name="do[door43gitmerge-edit]" type="submit" class="door43gitmerge-edit" value="<?php echo $this->getLang('edit_and_apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="edit">
-                <input name="do[door43gitmerge-apply]" type="submit" class="door43gitmerge-apply" value="<?php echo $this->getLang('apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="apply">
+                <span class="door43gitmerge-action-interface">
+                    <input name="do[door43gitmerge-dismiss]" type="submit" class="door43gitmerge-dismiss" value="<?php echo $this->getLang('dismiss'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="dismiss">
+                    <input type="button" class="door43gitmerge-edit" value="<?php echo $this->getLang('edit_and_apply'); ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>">
+                    <input name="do[door43gitmerge-apply]" type="submit" class="door43gitmerge-apply" value="<?php echo $this->getLang('apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="apply">
+                </span>
+                <span class="door43gitmerge-edit-interface">
+                    <input type="button" class="door43gitmerge-cancel" value="<?php echo $this->getLang('cancel'); ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>">
+                    <input type="reset" value="<?php echo $this->getLang('reset'); ?>">
+                    <input name="do[door43gitmerge-apply-edited]" type="submit" class="door43gitmerge-apply-edited" value="<?php echo $this->getLang('apply'); ?>" data-page="<?php echo $ID; ?>" data-frame="<?php echo $frame; ?>" data-device="<?php echo $device; ?>" data-action="apply-edited">
+                </span>
             </div>
         </form>
     </div>
