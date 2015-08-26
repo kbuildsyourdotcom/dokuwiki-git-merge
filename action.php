@@ -442,6 +442,34 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
     if($this->show_merge_interface) {
 
       $this->_load_existing_frames();
+
+      if (!empty($this->updated_frames)) {
+        foreach($this->updated_frames as $frame=>$devices) foreach($devices as $device) {
+          if (empty($this->devices[$device])) $this->devices[$device] = $this->_user($device);
+        }
+        @asort($this->devices);
+        @reset($this->devices);
+
+        if (AUTH_ADMIN) {
+          echo '<form id="door43gitmerge-power-controls">';
+          echo '<div class="chapter-version-selection">';
+          echo $this->getLang('show').': ';
+          echo '<select class="door43gitmerge-diff-switcher-all">';
+          echo '<option value="all" selected="selected">'.$this->getLang('all').'</option>';
+          foreach ($this->devices as $device=>$user) {
+            echo '<option value="'.$device.'">'.$user['name'].'</option>';
+          }
+          unset($device, $user);
+          echo '</select>';
+          echo '</div>';
+          echo '<div class="door43gitmerge-actions actions-all">';
+          echo '<input type="button" id="door43gitmerge-dismiss-all-from-device" value="'.$this->getLang('dismiss_all').'"> ';
+          echo '<input type="button" id="door43gitmerge-apply-all-from-device" value="'.$this->getLang('apply_all').'">';
+          echo '</div>';
+          echo '</form>';
+        }
+      }
+
       echo p_render('xhtml', p_get_instructions('====== '.$this->title.' ======'), $info);
 
       //loop through frames with available merge options
@@ -453,12 +481,36 @@ class action_plugin_door43gitmerge extends DokuWiki_Action_Plugin {
         foreach($this->updated_frames as $frame=>$data_array) $this->render_merge_interface_frame($frame, $data_array);
 ?>
 <script type="text/javascript">/*<![CDATA[*/
+jQuery(document).on('change input', '.door43gitmerge-diff-switcher-all', function(){
+  var elem = jQuery(this)
+    , device = elem.val()
+    , selects = jQuery('.door43gitmerge-diff-switcher')
+    , powerControlButtonContainer = jQuery('#door43gitmerge-power-controls .actions-all');
+  if (device=='all') {
+    selects.each(function(i){
+      jQuery(this).children().removeAttr('selected').first().attr('selected', 'selected');
+    });
+    powerControlButtonContainer.addClass('no-available-options');
+  }
+  else {
+    selects.children().removeAttr('selected').filter('[value="'+device+'"]').attr('selected', 'selected');
+    powerControlButtonContainer.removeClass('no-available-options');
+  }
+  jQuery(selects).trigger('change');
+});
 jQuery(document).on('change input', '.door43gitmerge-diff-switcher', function(){
   var elem = jQuery(this)
+    , frameContainer = elem.parents('.frame')
     , lastDevice = elem.attr('data-last-value')
     , device = elem.val()
+    , selectedItem = elem.children().filter('[selected]').attr('value')
     , frame = elem.attr('data-frame')
     , diffs = jQuery('#frame-'+frame+' .table');
+  if (typeof selectedItem==='undefined') {
+    frameContainer.addClass('no-available-options');
+    return;
+  }
+  frameContainer.removeClass('no-available-options');
   if (lastDevice==device) return;
   lastDevice = device;
   if (device=='all') diffs.addClass('show');
@@ -524,6 +576,22 @@ jQuery(document).on('click', '.door43gitmerge-cancel', function(e){
   formElem[0].reset();
   formElem.removeClass('mode-edit');
 });
+jQuery(document).on('click', '#door43gitmerge-dismiss-all-from-device', function(e){
+  e.preventDefault();
+  var availableFrames = jQuery('.frame:not(.no-available-options)')
+    , availableFramesDismissButtons = availableFrames.find('.table.show .door43gitmerge-dismiss');
+  availableFramesDismissButtons.trigger('click');
+});
+jQuery(document).on('click', '#door43gitmerge-apply-all-from-device', function(e){
+  e.preventDefault();
+  var availableFrames = jQuery('.frame:not(.no-available-options)')
+    , availableFramesApplyButtons = availableFrames.find('.table.show .door43gitmerge-apply');
+  availableFramesApplyButtons.trigger('click');
+});
+jQuery(document).on('ready', function(){
+  var elem = jQuery('.door43gitmerge-diff-switcher-all');
+  elem.trigger('change');
+});
 /*!]]>*/</script>
 <?php
       }
@@ -545,8 +613,11 @@ jQuery(document).on('click', '.door43gitmerge-cancel', function(e){
         unset($data_array[$index]);
       }
     }
-    unset($index, $device);
+    unset($index, $device, $new_content);
     if (!count($data_array)) return;
+    foreach ($data_array as $device) $user_array[$device] = $this->devices[$device];
+    @asort($user_array);
+    @reset($user_array);
 
     echo '<div id="frame-'.$frame.'" class="frame">';
     if ($frame=='title' || $frame=='reference') $frame_title = ucwords($frame);
@@ -565,21 +636,33 @@ jQuery(document).on('click', '.door43gitmerge-cancel', function(e){
     echo '<div class="frame-version-selection">';
     echo $this->getLang('version_to_compare').': ';
     echo '<select class="door43gitmerge-diff-switcher" data-frame="'.$frame.'">';
+/** /
     foreach ($data_array as $device) {
       if (!isset($first_device)) $first_device = $device;
       if (empty($this->devices[$device])) $this->devices[$device] = $this->_user($device);
       echo '<option value="'.$device.'">'.$this->devices[$device]['name'].'</option>';
     }
+/**/
+    foreach ($user_array as $device=>$user) {
+      if (!isset($first_device)) $first_device = $device;
+      echo '<option value="'.$device.'">'.$user['name'].'</option>';
+    }
     echo '<option value="all">'.$this->getLang('show_all').'</option>';
-    unset($device, $new_content);
+    unset($device, $user);
     echo '</select>';
     echo '</div>';
     echo '<div class="frame-diffs">';
+/** /
     foreach ($data_array as $device) {
       $new_content = $this->_content($device, $frame);
       $this->html_diff($frame, $device, $current_content, $new_content, $device==$first_device);
     }
-    unset($device, $new_content, $first_device);
+/**/
+    foreach ($user_array as $device=>$user) {
+      $new_content = $this->_content($device, $frame);
+      $this->html_diff($frame, $device, $current_content, $new_content, $device==$first_device);
+    }
+    unset($device, $user, $new_content, $first_device);
     echo '</div>';
     echo '</div>';
   }
